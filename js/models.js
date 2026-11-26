@@ -2,18 +2,22 @@
 // 1 world unit = 20 logical pixels of the 2D house plan.
 import * as THREE from "../vendor/three.module.min.js";
 import { OPTIONS } from "./avatar.js";
+import { RoundedBoxGeometry } from "../vendor/RoundedBoxGeometry.js";
 
 const matCache = new Map();
 export function mat(color, opts = {}) {
   const key = color + JSON.stringify(opts);
-  if (!matCache.has(key)) matCache.set(key, new THREE.MeshLambertMaterial({ color, ...opts }));
+  if (!matCache.has(key)) matCache.set(key, new THREE.MeshStandardMaterial({ color, roughness: 0.72, metalness: 0, envMapIntensity: 0.45, ...opts }));
   return matCache.get(key);
 }
 const geo = {
-  box: (w, h, d) => new THREE.BoxGeometry(w, h, d),
-  cyl: (rt, rb, h, s = 14) => new THREE.CylinderGeometry(rt, rb, h, s),
-  sph: (r, w = 16, h = 12) => new THREE.SphereGeometry(r, w, h),
-  cap: (r, l) => new THREE.CapsuleGeometry(r, l, 4, 10),
+  box: (w, h, d) => {
+    const r = Math.min(0.05, Math.min(w, h, d) * 0.3);
+    return r < 0.012 ? new THREE.BoxGeometry(w, h, d) : new RoundedBoxGeometry(w, h, d, 2, r);
+  },
+  cyl: (rt, rb, h, s = 20) => new THREE.CylinderGeometry(rt, rb, h, s),
+  sph: (r, w = 24, h = 16) => new THREE.SphereGeometry(r, w, h),
+  cap: (r, l) => new THREE.CapsuleGeometry(r, l, 6, 16),
 };
 function mesh(g, m, x = 0, y = 0, z = 0) {
   const o = new THREE.Mesh(g, m);
@@ -28,75 +32,102 @@ const darken = (hex, k = 0.75) => {
 };
 
 // ---------- People ----------
-// Returns a group with named parts so animations can move limbs.
+// Stylized, original characters: rounded body, hands and shoes, a face with eyes, brows, nose and a mouth that shows mood.
 export function buildPerson(look, { age = "adult", years } = {}) {
   const skin = OPTIONS.skin[look.skin] ?? OPTIONS.skin[2];
   const hair = OPTIONS.hairColor[look.hairColor] ?? OPTIONS.hairColor[0];
   const shirt = OPTIONS.shirt[look.shirt] ?? OPTIONS.shirt[5];
-  const pants = darken(shirt === "#ffffff" ? "#34495e" : "#2c3e50", 1);
+  const pants = shirt === "#34495e" ? "#4a4f57" : "#2f3e57";
+  const skinM = mat(skin, { roughness: 0.55 });
+  const shirtM = mat(shirt, { roughness: 0.85 });
+  const pantsM = mat(pants, { roughness: 0.9 });
   const g = new THREE.Group();
-  const body = new THREE.Group(); g.add(body);           // everything above the feet, for bobbing/lying
-  body.name = "body";
+  const body = new THREE.Group(); body.name = "body"; g.add(body);
 
-  // legs (pivot at hip)
+  // legs with shoes (pivot at the hip)
   const legs = [];
   for (const side of [-1, 1]) {
-    const hip = new THREE.Group(); hip.position.set(0.11 * side, 0.62, 0);
-    hip.add(mesh(geo.cap(0.085, 0.42), mat(pants), 0, -0.3, 0));
-    hip.add(box(0.15, 0.08, 0.24, "#222222", 0, -0.6, 0.04));
+    const hip = new THREE.Group(); hip.position.set(0.1 * side, 0.66, 0);
+    hip.add(mesh(geo.cap(0.085, 0.36), pantsM, 0, -0.27, 0));
+    const shoe = mesh(new RoundedBoxGeometry(0.15, 0.09, 0.27, 2, 0.04), mat("#f2f2f2", { roughness: 0.5 }), 0, -0.6, 0.04);
+    hip.add(shoe);
+    hip.add(mesh(new RoundedBoxGeometry(0.155, 0.03, 0.28, 2, 0.012), mat("#3a3a3a"), 0, -0.645, 0.04));
     body.add(hip); legs.push(hip);
   }
-  // torso
-  body.add(mesh(geo.cap(0.2, 0.38), mat(shirt), 0, 0.92, 0));
-  // arms (pivot at shoulder)
+  // hips + torso, slightly tapered
+  body.add(mesh(new RoundedBoxGeometry(0.36, 0.16, 0.22, 3, 0.07), pantsM, 0, 0.7, 0));
+  const torso = mesh(new THREE.CylinderGeometry(0.2, 0.17, 0.48, 24, 1), shirtM, 0, 0.98, 0);
+  torso.scale.z = 0.72; body.add(torso);
+  const chest = mesh(geo.sph(0.2), shirtM, 0, 1.2, 0); chest.scale.set(1, 0.42, 0.72); body.add(chest);
+  // arms with hands (pivot at the shoulder)
   const arms = [];
   for (const side of [-1, 1]) {
-    const sh = new THREE.Group(); sh.position.set(0.27 * side, 1.12, 0);
-    sh.add(mesh(geo.cap(0.065, 0.36), mat(shirt), 0, -0.2, 0));
-    sh.add(mesh(geo.sph(0.07), mat(skin), 0, -0.46, 0));
+    const sh = new THREE.Group(); sh.position.set(0.25 * side, 1.18, 0);
+    sh.add(mesh(geo.sph(0.075), shirtM, 0, 0, 0));
+    sh.add(mesh(geo.cap(0.06, 0.2), shirtM, 0, -0.15, 0));
+    sh.add(mesh(geo.cap(0.052, 0.16), skinM, 0, -0.36, 0));
+    const hand = mesh(geo.sph(0.06), skinM, 0, -0.5, 0.01); hand.scale.set(0.8, 1.1, 0.7); sh.add(hand);
+    sh.rotation.z = 0.08 * side;
     body.add(sh); arms.push(sh);
   }
   // neck + head
-  body.add(mesh(geo.cyl(0.07, 0.08, 0.12), mat(skin), 0, 1.3, 0));
-  const head = new THREE.Group(); head.position.set(0, 1.5, 0); body.add(head);
-  head.add(mesh(geo.sph(0.22, 20, 16), mat(skin)));
-  head.children[0].scale.set(1, 1.08, 1);
+  body.add(mesh(geo.cyl(0.065, 0.075, 0.12), skinM, 0, 1.3, 0));
+  const head = new THREE.Group(); head.position.set(0, 1.52, 0); body.add(head);
+  const skull = mesh(geo.sph(0.22, 32, 24), skinM); skull.scale.set(0.95, 1.05, 0.98); head.add(skull);
+  const jaw = mesh(geo.sph(0.17, 24, 16), skinM, 0, -0.08, 0.03); jaw.scale.set(1, 0.85, 0.95); head.add(jaw);
   for (const side of [-1, 1]) {
-    head.add(mesh(geo.sph(0.03, 8, 6), mat("#1a1a1a"), 0.08 * side, 0.03, 0.2));
-    head.add(mesh(geo.sph(0.045, 8, 6), mat(skin), 0.22 * side, 0, 0));        // ears
+    head.add(mesh(geo.sph(0.045), skinM, 0.205 * side, 0, -0.01));                        // ear
+    const white = mesh(geo.sph(0.042, 16, 12), mat("#ffffff", { roughness: 0.3 }), 0.075 * side, 0.03, 0.175);
+    white.scale.set(1, 1.15, 0.5); head.add(white);
+    head.add(mesh(geo.sph(0.026, 14, 10), mat("#3b2416", { roughness: 0.3 }), 0.075 * side, 0.025, 0.195));   // iris
+    head.add(mesh(geo.sph(0.013, 10, 8), mat("#0b0b0b", { roughness: 0.2 }), 0.075 * side, 0.025, 0.212));    // pupil
+    head.add(mesh(geo.sph(0.007, 8, 6), mat("#ffffff", { emissive: "#ffffff" }), 0.068 * side + 0.004, 0.035, 0.219)); // sparkle
+    const brow = mesh(new RoundedBoxGeometry(0.075, 0.018, 0.02, 2, 0.008), mat(hair === "#e8e0d0" ? "#9b9b9b" : hair), 0.075 * side, 0.095, 0.19);
+    brow.rotation.z = -0.12 * side; brow.name = side < 0 ? "browL" : "browR"; head.add(brow);
+    const cheek = mesh(geo.sph(0.03, 12, 8), mat("#e07a7a", { transparent: true, opacity: 0.22 }), 0.12 * side, -0.05, 0.16);
+    cheek.scale.z = 0.3; head.add(cheek);
   }
-  const mouth = mesh(geo.box(0.09, 0.02, 0.02), mat("#6b2f1f"), 0, -0.09, 0.205);
-  mouth.name = "mouth"; head.add(mouth);
+  const nose = mesh(geo.sph(0.03, 14, 10), mat(skin, { roughness: 0.5 }), 0, -0.03, 0.21); nose.scale.set(1, 0.9, 0.8); head.add(nose);
+  const mouth = mesh(new THREE.TorusGeometry(0.045, 0.011, 8, 20, Math.PI), mat("#7a2e2e", { roughness: 0.4 }), 0, -0.095, 0.195);
+  mouth.rotation.z = Math.PI; mouth.name = "mouth"; head.add(mouth);
   addHair(head, look.hair, hair);
   if (age === "adult" || age === "elder") addFacialHair(head, look.facial, hair);
   addGlasses(head, look.glasses);
 
   const s = years ? Math.min(1, 0.55 + years * 0.035) : age === "child" ? 0.72 : age === "teen" ? 0.88 : 1;
   g.scale.setScalar(s);
-  if (years && years < 11) head.scale.setScalar(1.15);   // kids get bigger heads
-  g.userData.parts = { body, legs, arms, head, mouth };
+  if (years && years < 11) head.scale.setScalar(1.15);
+  g.userData.parts = { body, legs, arms, head, mouth, brows: [head.getObjectByName("browL"), head.getObjectByName("browR")] };
+  g.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = false; } });
   return g;
 }
 
 function addHair(head, style, c) {
-  const m = mat(c);
-  const add = (o) => { o.castShadow = true; head.add(o); return o; };
-  const cap = (r, thetaLen = Math.PI / 2) => new THREE.SphereGeometry(r, 18, 12, 0, Math.PI * 2, 0, thetaLen);
+  const m = mat(c, { roughness: 0.6 });
+  const add = o => { head.add(o); return o; };
+  const cap = (r, thetaLen = Math.PI / 2) => new THREE.SphereGeometry(r, 32, 20, 0, Math.PI * 2, 0, thetaLen);
+  const capBack = (r, y = 0.02) => { const o = add(mesh(cap(r, 1.35), m, 0, y, -0.012)); o.scale.set(1, 1.04, 1.02); return o; };
   switch (style) {
-    case "short": add(mesh(cap(0.235, 1.3), m, 0, 0.02, -0.01)); break;
-    case "fade":  add(mesh(cap(0.228, 1.1), m, 0, 0.03, 0)); break;
-    case "afro":  add(mesh(geo.sph(0.34, 18, 14), m, 0, 0.1, -0.06)); break;
-    case "puffs": add(mesh(cap(0.232, 1.2), m, 0, 0.02, 0)); add(mesh(geo.sph(0.13), m, -0.2, 0.2, -0.02)); add(mesh(geo.sph(0.13), m, 0.2, 0.2, -0.02)); break;
-    case "bun":   add(mesh(cap(0.232, 1.25), m, 0, 0.02, 0)); add(mesh(geo.sph(0.12), m, 0, 0.24, -0.12)); break;
-    case "long":  add(mesh(cap(0.24, 1.45), m, 0, 0.02, -0.01));
-                  add(mesh(geo.box(0.44, 0.5, 0.14), m, 0, -0.2, -0.13)); break;
+    case "short": capBack(0.232); break;
+    case "fade": { const o = add(mesh(cap(0.226, 1.05), m, 0, 0.04, -0.005)); o.scale.set(0.98, 1.02, 1); break; }
+    case "afro": { add(mesh(geo.sph(0.33, 28, 20), m, 0, 0.1, -0.06)); break; }
+    case "puffs": capBack(0.232); add(mesh(geo.sph(0.12), m, -0.19, 0.2, -0.03)); add(mesh(geo.sph(0.12), m, 0.19, 0.2, -0.03)); break;
+    case "bun": capBack(0.232); add(mesh(geo.sph(0.11), m, 0, 0.23, -0.13)); break;
+    case "long": {
+      const o = add(mesh(cap(0.24, 1.5), m, 0, 0.02, -0.012)); o.scale.set(1.02, 1.05, 1.04);
+      const back = add(mesh(geo.cap(0.2, 0.32), m, 0, -0.2, -0.1)); back.scale.set(1.12, 1, 0.55);
+      for (const side of [-1, 1]) { const strand = add(mesh(geo.cap(0.06, 0.3), m, 0.19 * side, -0.13, 0.02)); strand.scale.z = 0.7; }
+      break;
+    }
     case "braids":
     case "locs": {
-      add(mesh(cap(0.235, 1.3), m, 0, 0.02, -0.01));
-      const n = style === "braids" ? 8 : 10;
+      capBack(0.233);
+      const n = style === "braids" ? 10 : 12;
       for (let i = 0; i < n; i++) {
-        const a = Math.PI * (0.15 + 0.7 * i / (n - 1)) + Math.PI;  // around the back
-        add(mesh(geo.cyl(0.03, 0.025, 0.5, 6), m, Math.cos(a) * 0.2, -0.2, Math.sin(a) * 0.2 * -1 - 0.02));
+        const a = Math.PI * (0.1 + 0.8 * i / (n - 1));
+        const x = Math.cos(a) * 0.21, z = -Math.sin(a) * 0.19 - 0.02;
+        const strand = add(mesh(geo.cap(style === "braids" ? 0.026 : 0.03, 0.42), m, x, -0.2, z));
+        strand.rotation.x = 0.08;
       }
       break;
     }
@@ -105,35 +136,58 @@ function addHair(head, style, c) {
 }
 
 function addFacialHair(head, style, c) {
-  const m = mat(c);
-  if (style === "beard") { const b = mesh(new THREE.SphereGeometry(0.225, 16, 10, 0, Math.PI * 2, Math.PI * 0.55, Math.PI * 0.45), m, 0, 0.01, 0.01); head.add(b); }
-  if (style === "goatee") head.add(mesh(geo.box(0.1, 0.09, 0.05), m, 0, -0.16, 0.18));
-  if (style === "mustache") head.add(mesh(geo.box(0.14, 0.03, 0.03), m, 0, -0.05, 0.21));
+  const m = mat(c, { roughness: 0.7 });
+  if (style === "beard") {
+    const b = mesh(new THREE.SphereGeometry(0.2, 24, 14, -Math.PI * 0.05, Math.PI * 1.1, Math.PI * 0.5, Math.PI * 0.42), m, 0, 0.0, 0.035);
+    b.rotation.y = Math.PI * 0.95; b.scale.set(1.02, 1.15, 1.05);
+    head.add(b);
+    head.add(mesh(new RoundedBoxGeometry(0.12, 0.025, 0.03, 2, 0.01), m, 0, -0.063, 0.2));
+  }
+  if (style === "goatee") head.add(mesh(new RoundedBoxGeometry(0.07, 0.08, 0.04, 2, 0.015), m, 0, -0.165, 0.17));
+  if (style === "mustache") head.add(mesh(new RoundedBoxGeometry(0.12, 0.025, 0.03, 2, 0.01), m, 0, -0.063, 0.205));
 }
 
 function addGlasses(head, style) {
   if (style === "none" || !style) return;
-  const m = mat("#222222");
+  const m = mat("#1f1f1f", { roughness: 0.35, metalness: 0.3 });
   for (const side of [-1, 1]) {
-    const g = style === "round" ? new THREE.TorusGeometry(0.055, 0.01, 6, 16) : new THREE.BoxGeometry(0.11, 0.08, 0.01);
-    const o = mesh(g, style === "round" ? m : mat("#222222", { transparent: true, opacity: 0.55 }), 0.08 * side, 0.03, 0.215);
+    const geom = style === "round" ? new THREE.TorusGeometry(0.05, 0.009, 8, 24) : new THREE.TorusGeometry(0.052, 0.01, 4, 4);
+    const o = mesh(geom, m, 0.075 * side, 0.03, 0.215);
+    if (style !== "round") o.rotation.z = Math.PI / 4;
     head.add(o);
+    head.add(mesh(new THREE.CircleGeometry(0.048, 20), mat("#cfe8f5", { transparent: true, opacity: 0.18, roughness: 0.05 }), 0.075 * side, 0.03, 0.214));
   }
-  head.add(mesh(geo.box(0.05, 0.012, 0.01), m, 0, 0.04, 0.215));
+  head.add(mesh(geo.box(0.05, 0.01, 0.01), m, 0, 0.04, 0.218));
+}
+
+// mood: "happy" | "neutral" | "sad" | "annoyed" — mouth shape and brows
+export function setMood(p, mood) {
+  const { mouth, brows } = p.userData.parts;
+  if (p.userData.mood === mood) return;
+  p.userData.mood = mood;
+  mouth.scale.set(1, 1, 1);
+  if (mood === "happy") { mouth.rotation.z = Math.PI; mouth.position.y = -0.095; }
+  else if (mood === "sad") { mouth.rotation.z = 0; mouth.position.y = -0.125; }
+  else { mouth.rotation.z = Math.PI; mouth.scale.set(1, 0.2, 1); mouth.position.y = -0.1; }
+  brows.forEach((b, i) => { const side = i ? 1 : -1;
+    b.rotation.z = mood === "annoyed" ? 0.35 * side : mood === "sad" ? -0.35 * side : -0.12 * side;
+    b.position.y = mood === "annoyed" ? 0.085 : 0.095; });
 }
 
 // pose: "idle" | "walk" | "sit" | "lie" | "dance" | "use" | "run"; t = seconds
 export function animatePerson(p, pose, t) {
-  const { body, legs, arms, mouth } = p.userData.parts;
+  const { body, legs, arms, head } = p.userData.parts;
   body.position.set(0, 0, 0); body.rotation.set(0, 0, 0);
+  head.rotation.set(0, 0, 0);
   legs.forEach(l => l.rotation.set(0, 0, 0));
-  arms.forEach(a => a.rotation.set(0, 0, 0));
-  const sw = Math.sin(t * 9);
+  arms.forEach((a, i) => a.rotation.set(0, 0, 0.08 * (i ? 1 : -1)));
+  const sw = Math.sin(t * 8);
   switch (pose) {
     case "walk":
-      legs[0].rotation.x = sw * 0.6; legs[1].rotation.x = -sw * 0.6;
-      arms[0].rotation.x = -sw * 0.5; arms[1].rotation.x = sw * 0.5;
-      body.position.y = Math.abs(Math.cos(t * 9)) * 0.03;
+      legs[0].rotation.x = sw * 0.55; legs[1].rotation.x = -sw * 0.55;
+      arms[0].rotation.x = -sw * 0.45; arms[1].rotation.x = sw * 0.45;
+      body.position.y = Math.abs(Math.cos(t * 8)) * 0.03;
+      body.rotation.y = sw * 0.05;
       break;
     case "run":
       legs[0].rotation.x = Math.sin(t * 14) * 0.9; legs[1].rotation.x = -Math.sin(t * 14) * 0.9;
@@ -143,31 +197,36 @@ export function animatePerson(p, pose, t) {
     case "sit":
       legs.forEach(l => l.rotation.x = -1.45);
       body.position.y = -0.36;
-      arms.forEach((a, i) => a.rotation.x = -0.5 + Math.sin(t * 2 + i) * 0.05);
+      arms.forEach((a, i) => a.rotation.x = -0.55 + Math.sin(t * 2 + i) * 0.05);
+      head.rotation.x = Math.sin(t * 0.7) * 0.05;
       break;
     case "lie":
       body.rotation.x = -Math.PI / 2;
       body.position.set(0, 0.7, 0.75);
-      arms.forEach(a => a.rotation.z = 0);
       break;
     case "dance":
       body.position.y = Math.abs(Math.sin(t * 6)) * 0.12;
       body.rotation.y = Math.sin(t * 3) * 0.5;
-      arms[0].rotation.z = 2.4 + Math.sin(t * 6) * 0.4; arms[1].rotation.z = -2.4 - Math.sin(t * 6 + 1) * 0.4;
+      arms[0].rotation.z = -2.4 - Math.sin(t * 6) * 0.4; arms[1].rotation.z = 2.4 + Math.sin(t * 6 + 1) * 0.4;
       legs[0].rotation.x = Math.sin(t * 6) * 0.3; legs[1].rotation.x = -Math.sin(t * 6) * 0.3;
+      head.rotation.z = Math.sin(t * 6) * 0.15;
       break;
     case "use":
       arms.forEach((a, i) => a.rotation.x = -1.1 + Math.sin(t * 5 + i * 2) * 0.15);
       break;
-    default:
+    case "talk":
+      arms[1].rotation.x = -0.6 + Math.sin(t * 4) * 0.25; arms[1].rotation.z = 0.25;
+      head.rotation.y = Math.sin(t * 2.5) * 0.12; head.rotation.x = Math.sin(t * 5) * 0.04;
+      break;
+    default: // idle: gentle breathing and weight shift
       body.position.y = Math.sin(t * 1.6) * 0.008;
-      arms[0].rotation.z = 0.06; arms[1].rotation.z = -0.06;
+      body.rotation.z = Math.sin(t * 0.5) * 0.015;
+      head.rotation.y = Math.sin(t * 0.37) * 0.15;
   }
-  if (mouth) mouth.scale.y = 1;
 }
 
 // ---------- Furniture ----------
-const WOOD = "#9c6b43", DARKWOOD = "#5e3d26", WHITE = "#f4f4f2", STEEL = "#b9c0c6", BLACK = "#26282c";
+const WOOD = "#a0703f", DARKWOOD = "#5e3d26", WHITE = "#f4f4f2", STEEL = "#c7ced4", BLACK = "#2a2c31";
 
 function legsUnder(g, w, d, h, c = DARKWOOD) {
   for (const [x, z] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) g.add(box(0.06, h, 0.06, c, x * (w / 2 - 0.05), h / 2, z * (d / 2 - 0.05)));
@@ -225,8 +284,8 @@ const BUILDERS = {
 export const USE = {
   bed:      { pose: { sleep: "lie", nap: "lie" }, at: [0, 0], y: 0, face: "out" },
   couch:    { pose: { relax: "sit", nap: "lie" }, at: [0, 0.12], y: 0.34, face: "out" },
-  computer: { pose: { browse: "sit", games: "sit", work: "sit" }, at: [0, 0.6], y: 0.2, face: "in" },
-  table:    { pose: { snack: "sit" }, at: [0.4, 0.65], y: 0.2, face: "in" },
+  computer: { pose: { browse: "sit", games: "sit", work: "sit", homework: "sit" }, at: [0, 0.6], y: 0.2, face: "in" },
+  table:    { pose: { snack: "sit", homework: "sit" }, at: [0.4, 0.65], y: 0.2, face: "in" },
   treadmill:{ pose: { workout: "run" }, at: [0, 0.1], y: 0.17, face: "in" },
   hottub:   { pose: { soak: "sit" }, at: [0.2, 0.3], y: 0.1, face: "out" },
   tub:      { pose: { bath: "lie" }, at: [0, 0], y: -0.15, face: "out" },

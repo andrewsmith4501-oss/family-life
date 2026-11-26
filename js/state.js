@@ -15,6 +15,8 @@ function fresh() {
     away: {},      // person id -> household id they're visiting
     funds: Object.fromEntries(HOUSEHOLDS.map(h => [h.id, START_FUNDS])),
     houses: {},    // household id -> { time, objects, rooms, pos, visitors }
+    life: {},      // person id -> { moodlets, skills, job, school, wants, points, shift } (see life.js)
+    rom: {},       // "a|b" -> romance for couples
   };
 }
 
@@ -25,7 +27,7 @@ export function load() {
       const s = JSON.parse(raw);
       const base = fresh();
       const out = { ...base, ...s, looks: { ...base.looks, ...s.looks }, rel: { ...base.rel, ...s.rel },
-        funds: { ...base.funds, ...s.funds }, needs: s.needs || {}, custom: s.custom || {}, away: s.away || {} };
+        funds: { ...base.funds, ...s.funds }, needs: s.needs || {}, custom: s.custom || {}, away: s.away || {}, life: s.life || {}, rom: s.rom || {} };
       // Older saves kept needs inside each house.
       for (const h of Object.values(out.houses || {})) {
         for (const [id, v] of Object.entries(h.sims || {})) {

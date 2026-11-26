@@ -4,22 +4,30 @@ import { HOUSEHOLDS, CHARACTERS, byId, relLabel } from "./characters.js";
 import { avatarSvg } from "./avatar.js";
 import { NEEDS, ROOMS, CATALOG, ROOM_COLORS, makeObjects, info, ACTIONS, SOCIALS, canDo, availableSocials,
   resolveSocial, chooseAutonomous, moodOf, favoriteOf } from "./sim.js";
-import { buildPerson, animatePerson, buildFurniture, useSpot, mat } from "./models.js";
+import { buildPerson, animatePerson, setMood, buildFurniture, useSpot, mat } from "./models.js";
+import { RoomEnvironment } from "../vendor/RoomEnvironment.js";
+import { RoundedBoxGeometry } from "../vendor/RoundedBoxGeometry.js";
+import { FLOOR_STYLE, floorTexture, wallpaper, siding, grass, stone } from "./textures.js";
 import { save } from "./state.js";
+import { EMOTIONS, AFTER, addMoodlet, socialFeelings, tickMoodlets, emotionOf, emotionText, socialBonus, isGood,
+  SKILLS, skillFor, practice, skillLevel, xpNeeded, WEEKDAYS, CAREERS, PAY, shiftFor, endShift, gradeOf, goesToSchool,
+  fillWants, wantInfo, checkWants, REWARDS, friendLabel, romanceLabel, isCouple, partnerOf, lifeOf } from "./life.js";
 
 const W = 360, H = 560, U = 20;               // logical plan size; 20 logical px = 1 world unit
 const DOOR = { x: 270, y: 548 };   // front door sits in the den's outside wall
 const GAME_MIN_PER_SEC = 2, WALK_SPEED = 80, SELL_BACK = 0.8;
-const MOOD_TEXT = { happy: "Happy", neutral: "Okay", sad: "Unhappy", annoyed: "Annoyed" };
-const MOOD_COLOR = { happy: "#2ecc71", neutral: "#f1c40f", annoyed: "#f39c12", sad: "#e74c3c" };
 const toW = (x, y) => new THREE.Vector3(x / U - W / U / 2, 0, y / U - H / U / 2);
 const fromW = (v) => ({ x: (v.x + W / U / 2) * U, y: (v.z + H / U / 2) * U });
 
 function fmtTime(t) {
-  const day = Math.floor(t / 1440) + 1, m = Math.floor(t % 1440);
+  const d = Math.floor(t / 1440), m = Math.floor(t % 1440);
   const h24 = Math.floor(m / 60), mm = String(m % 60).padStart(2, "0");
-  return `Day ${day} · ${((h24 + 11) % 12) + 1}:${mm} ${h24 < 12 ? "AM" : "PM"}`;
+  return `${WEEKDAYS[d % 7]} · Day ${d + 1} · ${((h24 + 11) % 12) + 1}:${mm} ${h24 < 12 ? "AM" : "PM"}`;
 }
+const fmtHour = h => `${((h + 11) % 12) + 1} ${h % 24 < 12 ? "AM" : "PM"}`;
+const pickR = arr => arr[Math.floor(Math.random() * arr.length)];
+const ALL_IDS = CHARACTERS.map(c => c.id);
+const TABS = [["needs", "Needs"], ["mood", "Mood"], ["wants", "Wants"], ["skills", "Skills"], ["job", "Job"], ["people", "People"]];
 const clamp = v => Math.max(0, Math.min(100, v));
 const money = v => "$" + Math.floor(v).toLocaleString();
 const el = html => { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstElementChild; };
@@ -54,8 +62,14 @@ export function openHouse3d(app, state, hid, onExit) {
 
   const view = el(`<div class="view3d"><canvas></canvas><div class="labels"></div>
     <div class="cam"><button data-r="-1" aria-label="Rotate left">⟲</button><button data-z="1" aria-label="Zoom in">＋</button><button data-z="-1" aria-label="Zoom out">－</button><button data-r="1" aria-label="Rotate right">⟳</button></div>
-    <div class="build-tip hidden"></div></div>`);
-  const canvas = view.querySelector("canvas"), labels = view.querySelector(".labels"), tip = view.querySelector(".build-tip");
+    <div class="build-tip hidden"></div><div class="toasts"></div></div>`);
+  const canvas = view.querySelector("canvas"), labels = view.querySelector(".labels"), tip = view.querySelector(".build-tip"), toasts = view.querySelector(".toasts");
+  // little news popups, like "Von got promoted!"
+  function toast(text) {
+    const n = el(`<div class="toast"></div>`); n.textContent = text; toasts.prepend(n);
+    while (toasts.children.length > 3) toasts.lastElementChild.remove();
+    setTimeout(() => n.classList.add("out"), 4200); setTimeout(() => n.remove(), 4800);
+  }
   const panel = el(`<section class="panel"></section>`);
   const sheet = el(`<div class="sheet hidden"></div>`);
   app.append(bar, view, panel, sheet);
@@ -65,23 +79,40 @@ export function openHouse3d(app, state, hid, onExit) {
   renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.05;
   const scene = new THREE.Scene();
   scene.background = new THREE.Color("#a7d3ee");
-  const hemi = new THREE.HemisphereLight("#ffffff", "#6b8f4e", 1.1); scene.add(hemi);
-  const sun = new THREE.DirectionalLight("#fff6e0", 1.6);
+  // soft "room" reflections make the materials read as real surfaces
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(new RoomEnvironment(renderer), 0.04).texture;
+  const hemi = new THREE.HemisphereLight("#ffffff", "#6b8f4e", 0.5); scene.add(hemi);
+  const sun = new THREE.DirectionalLight("#fff1d6", 2.2);
   sun.position.set(-8, 16, 10); sun.castShadow = true;
-  sun.shadow.mapSize.set(1024, 1024);
+  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.03;
   Object.assign(sun.shadow.camera, { left: -14, right: 14, top: 18, bottom: -18, near: 1, far: 50 });
   scene.add(sun);
 
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(80, 80), mat("#7fb069"));
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(80, 80), new THREE.MeshStandardMaterial({ map: grass(), roughness: 1, envMapIntensity: 0.3 }));
   ground.rotation.x = -Math.PI / 2; ground.position.y = -0.06; ground.receiveShadow = true; scene.add(ground);
   // a little path to the front door
-  const path = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 6), mat("#d9cbb0")); path.rotation.x = -Math.PI / 2;
+  const pathTex = stone().clone(); pathTex.repeat.set(1, 4);
+  const path = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 6), new THREE.MeshStandardMaterial({ map: pathTex, roughness: 0.95 })); path.rotation.x = -Math.PI / 2;
   path.position.copy(toW(DOOR.x, DOOR.y + 60)); path.position.y = -0.05; path.receiveShadow = true; scene.add(path);
 
+  // textured floors: wood planks, tile or carpet, tinted with the room's paint color
+  function floorMap(i) {
+    const r = ROOMS[i], style = FLOOR_STYLE[r.name] || "wood";
+    const t = floorTexture(style, saved.rooms[i]).clone();
+    const size = style === "tile" ? 1.6 : style === "carpet" ? 3 : 4;
+    t.repeat.set(r.w / U / size, r.h / U / size); t.needsUpdate = true;
+    return t;
+  }
   const floors = ROOMS.map((r, i) => {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(r.w / U, 0.1, r.h / U), new THREE.MeshLambertMaterial({ color: saved.rooms[i] }));
+    const style = FLOOR_STYLE[r.name] || "wood";
+    const m = new THREE.Mesh(new THREE.BoxGeometry(r.w / U, 0.1, r.h / U),
+      new THREE.MeshStandardMaterial({ map: floorMap(i), envMapIntensity: 0.3, roughness: style === "tile" ? 0.35 : style === "carpet" ? 1 : 0.6 }));
     m.position.copy(toW(r.x + r.w / 2, r.y + r.h / 2)); m.position.y = -0.05; m.receiveShadow = true; m.userData.room = i;
     scene.add(m); return m;
   });
@@ -89,7 +120,11 @@ export function openHouse3d(app, state, hid, onExit) {
   // Walls: a doorway in the middle of every wall two rooms share, solid outside walls except the front door.
   // Far-side outside walls stand tall, near ones drop low so you can see in.
   const walls = [], doors = [];
-  const wallMat = mat("#f2ece1"), trimMat = mat("#d8cbb5");
+  const PAPER = "#efe6d8", SIDING = "#d9cdb8";
+  const baseMat = mat("#f7f3ec", { roughness: 0.5 });
+  const frameMat = mat("#fbfbf8", { roughness: 0.4 });
+  const glassMat = new THREE.MeshStandardMaterial({ color: "#bfe3f7", roughness: 0.08, metalness: 0.1, transparent: true, opacity: 0.55, emissive: "#5f8fb0", emissiveIntensity: 0.25 });
+  function texMat(base, len) { const t = base.clone(); t.needsUpdate = true; const m = new THREE.MeshStandardMaterial({ map: t, roughness: 0.85, envMapIntensity: 0.3 }); m.userData.len = len; return m; }
   const DOOR_GAP = 30;   // logical px
   function addWallSeg(x1, y1, x2, y2, exterior, gapAt) {
     const horiz = y1 === y2;
@@ -97,11 +132,36 @@ export function openHouse3d(app, state, hid, onExit) {
     const pieces = gapAt == null ? [[lo, hi]] : [[lo, gapAt - DOOR_GAP / 2], [gapAt + DOOR_GAP / 2, hi]];
     for (const [a, b] of pieces) {
       if (b - a < 1) continue;
-      const g = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), exterior ? wallMat : trimMat);
+      const len = (b - a) / U;
+      const nx = horiz ? 0 : (x1 === 0 ? -1 : 1), nz = horiz ? (y1 === 0 ? -1 : 1) : 0;
+      const inner = texMat(wallpaper(PAPER), len), outer = exterior ? texMat(siding(SIDING), len) : texMat(wallpaper(PAPER), len);
+      const cap = mat("#e7dccb");
+      // box faces: +x, -x, +y, -y, +z, -z
+      const mats = horiz ? [cap, cap, cap, cap, nz > 0 ? outer : inner, nz > 0 ? inner : outer]
+                         : [nx > 0 ? outer : inner, nx > 0 ? inner : outer, cap, cap, cap, cap];
+      const g = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), mats);
       g.castShadow = true; g.receiveShadow = true;
-      g.position.copy(horiz ? toW((a + b) / 2, y1) : toW(x1, (a + b) / 2));
-      g.userData = { horiz, len: (b - a) / U, exterior,
-        nx: horiz ? 0 : (x1 === 0 ? -1 : 1), nz: horiz ? (y1 === 0 ? -1 : 1) : 0 };
+      const pos = horiz ? toW((a + b) / 2, y1) : toW(x1, (a + b) / 2);
+      g.position.copy(pos);
+      g.userData = { horiz, len, exterior, nx, nz, maps: [inner.map, outer.map], windows: [] };
+      // baseboard
+      const bb = new THREE.Mesh(new THREE.BoxGeometry(horiz ? len : 0.16, 0.1, horiz ? 0.16 : len), baseMat);
+      bb.position.set(pos.x, 0.05, pos.z); bb.receiveShadow = true; scene.add(bb);
+      // windows on longer outside walls (shown when that wall stands tall)
+      if (exterior && len > 2.4) {
+        const count = Math.max(1, Math.floor(len / 4));
+        for (let k = 0; k < count; k++) {
+          const off = -len / 2 + (k + 0.5) * len / count;
+          const win = new THREE.Group();
+          win.add(new THREE.Mesh(new RoundedBoxGeometry(1.15, 0.95, 0.18, 2, 0.03), frameMat));
+          const glass = new THREE.Mesh(new THREE.BoxGeometry(0.98, 0.78, 0.19), glassMat); win.add(glass);
+          win.add(new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.78, 0.2), frameMat));
+          win.add(new THREE.Mesh(new THREE.BoxGeometry(0.98, 0.04, 0.2), frameMat));
+          win.position.set(pos.x + (horiz ? off : 0), 1.3, pos.z + (horiz ? 0 : off));
+          if (!horiz) win.rotation.y = Math.PI / 2;
+          scene.add(win); g.userData.windows.push(win);
+        }
+      }
       scene.add(g); walls.push(g);
     }
   }
@@ -161,6 +221,8 @@ export function openHouse3d(app, state, hid, onExit) {
       const ht = far ? 2.2 : d.exterior ? 0.45 : 0.3;
       w.scale.set(d.horiz ? d.len : 0.12, ht, d.horiz ? 0.12 : d.len);
       w.position.y = ht / 2;
+      for (const t of d.maps) t.repeat.set(d.len * 0.7, ht * 0.7);
+      for (const win of d.windows) win.visible = far;
     }
   }
   // front door frame
@@ -168,6 +230,64 @@ export function openHouse3d(app, state, hid, onExit) {
   for (const s of [-1, 1]) { const p = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.6, 0.16), mat("#8b5a2b")); p.position.set(s * 0.72, 0.3, 0); doorFrame.add(p); }
   const mat_ = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.02, 0.5), mat("#a0522d")); mat_.position.set(0, 0.01, 0.4); doorFrame.add(mat_);
   doorFrame.position.copy(toW(DOOR.x, H)); scene.add(doorFrame);
+
+  // warm ceiling light in each room, brighter at night
+  const lamps = ROOMS.map(r => {
+    const l = new THREE.PointLight("#ffd9a0", 0, 9, 1.6);
+    l.position.copy(toW(r.x + r.w / 2, r.y + r.h / 2)); l.position.y = 2.4;
+    scene.add(l); return l;
+  });
+
+  // ---------- Yard: trees, bushes, flowers and a picket fence ----------
+  const yard = new THREE.Group(); scene.add(yard);
+  const leafM = [mat("#4f8f3a", { roughness: 0.9 }), mat("#5fa046", { roughness: 0.9 }), mat("#3f7c33", { roughness: 0.9 })];
+  const barkM = mat("#7a5634", { roughness: 0.95 });
+  function tree(x, z, s = 1) {
+    const t = new THREE.Group();
+    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.2, 1.4, 10), barkM); trunk.position.y = 0.7; t.add(trunk);
+    for (let i = 0; i < 6; i++) {
+      const a = i * 1.1, r = i ? 0.55 : 0;
+      const b = new THREE.Mesh(new THREE.IcosahedronGeometry(i ? 0.65 : 0.85, 1), leafM[i % 3]);
+      b.position.set(Math.cos(a) * r, 1.9 + (i % 2) * 0.35 + (i ? 0 : 0.4), Math.sin(a) * r); t.add(b);
+    }
+    t.position.set(x, 0, z); t.scale.setScalar(s);
+    t.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+    yard.add(t);
+  }
+  function bush(x, z, s = 1) {
+    const b = new THREE.Group();
+    for (let i = 0; i < 3; i++) { const m = new THREE.Mesh(new THREE.IcosahedronGeometry(0.32, 1), leafM[(i + 1) % 3]); m.position.set((i - 1) * 0.3, 0.28, (i % 2) * 0.12); b.add(m); }
+    b.position.set(x, 0, z); b.scale.setScalar(s);
+    b.traverse(o => { if (o.isMesh) o.castShadow = true; });
+    yard.add(b);
+  }
+  function flowers(x, z) {
+    const colors = ["#ff6b8b", "#ffd166", "#ffffff", "#c77dff"];
+    for (let i = 0; i < 9; i++) {
+      const f = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 6), mat(colors[i % 4], { roughness: 0.6 }));
+      f.position.set(x + (i % 3) * 0.22 - 0.22, 0.12, z + Math.floor(i / 3) * 0.22 - 0.22); yard.add(f);
+      const st = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.12, 4), leafM[0]); st.position.set(f.position.x, 0.06, f.position.z); yard.add(st);
+    }
+  }
+  const HX = W / U / 2, HZ = H / U / 2;   // house half-size in world units
+  tree(-HX - 3, -HZ + 3, 1.2); tree(HX + 3.2, -HZ + 6, 1); tree(-HX - 2.5, HZ - 4, 0.9); tree(HX + 2.8, HZ + 2, 1.1); tree(-HX - 4, 2, 1.3);
+  const doorW = toW(DOOR.x, H);
+  for (let x = -HX + 1; x < HX - 0.5; x += 1.2) if (Math.abs(x - doorW.x) > 1.4) bush(x, HZ + 0.55, 0.8);
+  flowers(doorW.x - 1.6, HZ + 2.2); flowers(doorW.x + 1.6, HZ + 2.2); flowers(-HX - 1.2, -HZ - 1.2);
+  // picket fence around the yard
+  const fenceM = mat("#fbf8f2", { roughness: 0.6 });
+  const FX = HX + 6, FZ = HZ + 5;
+  function fenceRun(x1, z1, x2, z2, skipAt) {
+    const len = Math.hypot(x2 - x1, z2 - z1), n = Math.floor(len / 0.3);
+    for (let i = 0; i <= n; i++) {
+      const x = x1 + (x2 - x1) * i / n, z = z1 + (z2 - z1) * i / n;
+      if (skipAt && Math.hypot(x - skipAt.x, z - skipAt.z) < 1) continue;
+      const p = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.6, 0.05), fenceM); p.position.set(x, 0.3, z); p.castShadow = true; yard.add(p);
+    }
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(len, 0.05, 0.05), fenceM);
+    rail.position.set((x1 + x2) / 2, 0.42, (z1 + z2) / 2); rail.rotation.y = -Math.atan2(z2 - z1, x2 - x1); yard.add(rail);
+  }
+  fenceRun(-FX, -FZ, FX, -FZ); fenceRun(-FX, FZ, FX, FZ, { x: doorW.x, z: FZ }); fenceRun(-FX, -FZ, -FX, FZ); fenceRun(FX, -FZ, FX, FZ);
 
   // ---------- Camera ----------
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
@@ -270,11 +390,11 @@ export function openHouse3d(app, state, hid, onExit) {
       if (inside) { const i = ROOMS.findIndex(r => lp.x >= r.x && lp.x < r.x + r.w && lp.y >= r.y && lp.y < r.y + r.h); if (i >= 0) paintMenu(i); }
       return;
     }
-    const hitSim = pick(cx, cy, simGroup.children)[0];
+    const hitSim = pick(cx, cy, simGroup.children.filter(m => m.visible))[0];
     if (hitSim) { const s = simById[ownerOf(hitSim.object).userData.simId]; if (s) return simTapped(s); }
     const hitObj = pick(cx, cy, objGroup.children)[0];
     if (hitObj) return objectMenu(objIndex[ownerOf(hitObj.object).userData.objId]);
-    if (selected && inside) command(selected, { type: "walk", x: lp.x, y: lp.y });
+    if (selected && inside && !selected.life.shift) command(selected, { type: "walk", x: lp.x, y: lp.y });
   }
 
   // ---------- Furniture ----------
@@ -289,7 +409,7 @@ export function openHouse3d(app, state, hid, onExit) {
       if (pending?.obj === o) g.traverse(m => { if (m.isMesh) { m.material = m.material.clone(); m.material.transparent = true; m.material.opacity = 0.45; } });
       objGroup.add(g);
     }
-    floors.forEach((f, i) => f.material.color.set(saved.rooms[i]));
+    floors.forEach((f, i) => { if (f.userData.color !== saved.rooms[i]) { f.userData.color = saved.rooms[i]; f.material.map = floorMap(i); f.material.needsUpdate = true; } });
   }
   const twinkle = () => objGroup.traverse(m => { if (m.userData.twinkle !== undefined) m.visible = Math.sin(clockT * 3 + m.userData.twinkle) > -0.3; });
 
@@ -322,14 +442,17 @@ export function openHouse3d(app, state, hid, onExit) {
       const c = byId[id], p = saved.pos[id];
       const s = { id, c, visitor: !h.members.includes(id),
         needs: state.needs[id] ||= Object.fromEntries(Object.keys(NEEDS).map(n => [n, 70 + Math.random() * 25])),
-        x: p?.x ?? DOOR.x, y: p?.y ?? DOOR.y - 10, task: null, idle: Math.random() * 6, bubble: null, mood: "happy", heading: 0, phase: Math.random() * 10 };
+        x: p?.x ?? DOOR.x, y: p?.y ?? DOOR.y - 10, task: null, idle: Math.random() * 6, bubble: null, mood: "happy", heading: 0, phase: Math.random() * 10,
+        life: lifeOf(state, id), queue: [] };
+      s.em = emotionOf(s.life, s.needs, c);
+      fillWants(c, s.life, { hasPartner: !!partnerOf(id, ALL_IDS) });
       buildModel(s);
       s.label = el(`<div class="tag3d"><div class="bubble" data-who="${c.name}"></div><span class="nm">${c.name}</span></div>`);
       labels.append(s.label);
       sims.push(s);
     }
     simById = Object.fromEntries(sims.map(s => [s.id, s]));
-    if (!selected || !simById[selected.id]) selected = sims.find(s => s.c.player) || sims.find(s => !s.visitor) || sims[0] || null;
+    if (!selected || !simById[selected.id]) selected = sims.find(s => s.c.player && !s.life.shift) || sims.find(s => !s.visitor && !s.life.shift) || sims[0] || null;
     renderPanel();
   }
   function buildModel(s) {
@@ -362,21 +485,86 @@ export function openHouse3d(app, state, hid, onExit) {
   function objectMenu(o) {
     if (!o || !selected) return;
     const it = info(o);
+    if (selected.life.shift) { toast(`${selected.c.name} is ${selected.life.shift.kind === "school" ? "at school" : "at work"} right now.`); return; }
     if (!it.actions.length) { say(selected, `Nice ${it.label.toLowerCase()} ✨`); return; }
     const fav = favoriteOf(selected.c, state.custom[selected.id]);
-    openSheet(`${it.icon} ${it.label} · ${selected.c.name}`, it.actions.map(a => ({
-      label: ACTIONS[a].label + (a === fav ? " ❤️" : ""), disabled: !canDo(selected.c, a),
-      note: !canDo(selected.c, a) ? (ACTIONS[a].adultsOnly ? "Grown-ups only" : "Kids only") : "",
-      run: () => command(selected, { type: "action", obj: o.id, action: a }),
-    })));
+    const wants = new Set(selected.life.wants);
+    const items = it.actions.filter(a => a !== "homework" || canDo(selected.c, a)).map(a => ({
+      label: ACTIONS[a].label + (a === fav ? " ❤️" : "") + (wants.has(a) ? " ✨" : ""), disabled: !canDo(selected.c, a),
+      note: !canDo(selected.c, a) ? (ACTIONS[a].adultsOnly ? "Grown-ups only" : "Kids only") : wants.has(a) ? "They want this" : "",
+      run: () => order(selected, { type: "action", obj: o.id, action: a }),
+    }));
+    if (o.type === "computer" && !goesToSchool(selected.c)) items.push({ label: selected.life.job ? "💼 Look for a new job" : "💼 Find a job", run: () => jobMenu(selected) });
+    openSheet(`${it.icon} ${it.label} · ${selected.c.name}`, items);
+  }
+  // ---------- Relationships ----------
+  state.rom ||= {};
+  const romKey = (a, b) => [a, b].sort().join("|");
+  const romOf = (a, b) => state.rom[romKey(a, b)] ??= 75;
+  function socialCtx(a, b) {
+    return { romance: isCouple(a.id, b.id) ? romOf(a.id, b.id) : 0, actorEmotion: a.em.emotion, targetEmotion: b.em.emotion };
+  }
+  function relBars(a, b) {
+    const rel = state.rel[`${a.id}|${b.id}`];
+    let html = `<div class="relbar"><span>${friendLabel(rel)}</span><span class="meter"><i style="width:${rel}%;background:#2ecc71"></i></span></div>`;
+    if (isCouple(a.id, b.id)) { const r = romOf(a.id, b.id); html += `<div class="relbar"><span>💕 ${romanceLabel(r)}</span><span class="meter"><i style="width:${r}%;background:#ff6fb5"></i></span></div>`; }
+    return html;
   }
   function simTapped(s) {
     if (s === selected) return;
+    if (selected.life.shift) { selected = s; renderPanel(); return; }
     const rel = state.rel[`${selected.id}|${s.id}`];
-    const items = availableSocials(selected.c, s.c, rel).map(t => ({ label: SOCIALS[t].label, run: () => command(selected, { type: "social", target: s.id, social: t }) }));
+    const em = selected.em.emotion;
+    const items = [{ html: `<div class="relhead">${EMOTIONS[s.em.emotion].icon} ${s.c.name} is feeling ${emotionText(s.em).toLowerCase()}${relBars(selected, s)}</div>` }];
+    for (const t of availableSocials(selected.c, s.c, rel, socialCtx(selected, s))) {
+      const boost = socialBonus(em, t) > 0;
+      items.push({ label: SOCIALS[t].label + (boost ? ` ${EMOTIONS[em].icon}` : ""), note: boost ? `${EMOTIONS[em].label} boost` : "",
+        run: () => order(selected, { type: "social", target: s.id, social: t }) });
+    }
     items.push({ label: `▶ Play as ${s.c.name}`, run: () => { selected = s; renderPanel(); } });
     if (s.visitor) items.push({ label: `👋 Send ${s.c.name} home`, run: () => sendHome(s.id) });
-    openSheet(`${selected.c.name} → ${s.c.name} <small>(${relLabel(selected.id, s.id)}, ${Math.round(rel)}/100)</small>`, items);
+    openSheet(`${selected.c.name} → ${s.c.name} <small>(${relLabel(selected.id, s.id)})</small>`, items);
+  }
+
+  // ---------- Jobs, wants and rewards ----------
+  const today = () => Math.floor(saved.time / 1440);
+  function jobMenu(s) {
+    openSheet(`💼 Jobs for ${s.c.name} <small>(weekdays)</small>`, Object.entries(CAREERS).map(([k, c]) => ({
+      label: `${c.icon} ${c.label}: ${c.levels[0]}`, note: `${fmtHour(c.start)}–${fmtHour(c.end)} · $${PAY[0]}/hr`,
+      run: () => {
+        s.life.job = { track: k, level: 0, perf: 30 };
+        (s.life.lastShift ||= {})[hid] = today();   // first day is tomorrow
+        say(s, "I got the job! 🎉"); toast(`💼 ${s.c.name} is now a ${c.levels[0].toLowerCase()}. Work starts next weekday at ${fmtHour(c.start)}.`);
+        renderPanel(); persist();
+      },
+    })), "tall");
+  }
+  function rewardsMenu(s) {
+    const pts = s.life.points;
+    openSheet(`🎁 Rewards for ${s.c.name} <small>(${pts} points)</small>`, REWARDS.map(r => ({
+      label: r.label, note: `${r.note} · ${r.cost} pts`, disabled: pts < r.cost, run: () => buyReward(s, r),
+    })));
+  }
+  function buyReward(s, r) {
+    s.life.points -= r.cost;
+    if (r.id === "energy") s.needs.energy = 100;
+    else if (r.id === "clean") s.needs.hygiene = 100;
+    else if (r.id === "allneeds") for (const n of Object.keys(NEEDS)) s.needs[n] = 100;
+    else if (r.id === "learn") {
+      const ks = Object.keys(SKILLS).filter(k => skillLevel(s.life, k) < 10).sort((a, b) => skillLevel(s.life, b) - skillLevel(s.life, a));
+      if (ks[0]) { const sk = (s.life.skills[ks[0]] ||= { lvl: 0, xp: 0 }); sk.lvl++; levelUp(s, ks[0], sk.lvl); }
+    } else addMoodlet(s.life, r.label, r.id, 3, 480);
+    say(s, "✨ Ooh, I feel that!"); renderPanel(); persist();
+  }
+  function wantsDone(s, list) {
+    for (const w of list) { say(s, `✨ ${w.icon} ${w.text}! +100`); if (s === selected) toast(`✨ ${s.c.name}: "${w.text}" done. +100 points`); }
+    if (list.length) setTimeout(() => fillWants(s.c, s.life, { hasPartner: !!partnerOf(s.id, ALL_IDS) }), 4000);
+  }
+  function levelUp(s, k, lv) {
+    say(s, `⭐ ${SKILLS[k].label} level ${lv}!`);
+    toast(`⭐ ${s.c.name} reached ${SKILLS[k].label} level ${lv}`);
+    addMoodlet(s.life, "Leveled up!", "confident", 1, 180);
+    wantsDone(s, checkWants(s.life, "levelup"));
   }
 
   // ---------- Visiting ----------
@@ -392,6 +580,7 @@ export function openHouse3d(app, state, hid, onExit) {
     delete saved.pos[id];
     syncSims();
     const s = simById[id];
+    if (selected && selected.id !== id) wantsDone(selected, checkWants(selected.life, "invite"));
     if (s) { s.x = DOOR.x; s.y = DOOR.y + 30; command(s, { type: "walk", x: DOOR.x + (Math.random() * 60 - 30), y: DOOR.y - 50 }); say(s, s.visitor ? "Hey y'all! 👋" : "I'm home!"); }
     persist();
   }
@@ -458,11 +647,37 @@ export function openHouse3d(app, state, hid, onExit) {
     task.path = task.type === "social" ? [] : pathTo(s.x, s.y, task.x, task.y);
     s.task = task;
   }
+  // Player orders line up behind what they're doing (up to 5), like a modern life sim. Free-will stuff gets replaced.
+  function order(s, task) {
+    if (s.life.shift) return;
+    if (!s.task || s.task.auto) { command(s, task); return; }
+    if (s.queue.length >= 5) { say(s, "One thing at a time! 😤"); return; }
+    s.queue.push(task);
+  }
+  function finish(s) {
+    s.task = null;
+    while (s.queue.length && !s.task) {
+      const nx = s.queue.shift();
+      if (nx.type === "social" && !simById[nx.target]) continue;
+      if (nx.type === "action" && !objIndex[nx.obj]) continue;
+      command(s, nx);
+    }
+  }
+  function cancelQueued(s, i) {
+    if (i === 0) { finish(s); s.idle = -20; } else s.queue.splice(i - 1, 1);
+    updatePanel();
+  }
   function say(s, text, secs = 3.8) { s.bubble = { text, until: performance.now() + secs * 1000 }; }
   function finishSocial(s, t) {
     const target = simById[t.target]; if (!target) return;
     const keyA = `${s.id}|${target.id}`, keyB = `${target.id}|${s.id}`;
-    const res = resolveSocial(t.social, s.c, target.c, state.rel[keyA], state.custom[s.id]?.phrases || []);
+    const skill = skillFor(t.social);
+    const bonus = socialBonus(s.em.emotion, t.social) + skillLevel(s.life, skill === "comedy" ? "comedy" : "charisma") * 0.015;
+    const res = resolveSocial(t.social, s.c, target.c, state.rel[keyA], state.custom[s.id]?.phrases || [], bonus);
+    socialFeelings(t.social, res.ok, s.life, target.life);
+    if (SOCIALS[t.social].romance) { const k = romKey(s.id, target.id); state.rom[k] = clamp(romOf(s.id, target.id) + (res.ok ? SOCIALS[t.social].romance : -SOCIALS[t.social].romance)); }
+    const lv = practice(s.life, skill, 20, s.em.emotion); if (lv) levelUp(s, skill, lv);
+    wantsDone(s, checkWants(s.life, "social", t.social, { ok: res.ok }));
     state.rel[keyA] = clamp(state.rel[keyA] + res.delta); state.rel[keyB] = clamp(state.rel[keyB] + res.delta);
     const soc = SOCIALS[t.social];
     s.needs.social = clamp(s.needs.social + soc.social);
@@ -471,7 +686,7 @@ export function openHouse3d(app, state, hid, onExit) {
     s.heading = Math.atan2(target.x - s.x, target.y - s.y);
     if (!target.task) target.heading = Math.atan2(s.x - target.x, s.y - target.y);
     say(s, res.line); setTimeout(() => say(target, res.reply, 3), 1200);
-    s.gesture = { kind: t.social === "hug" ? "hug" : "talk", until: performance.now() + 1800 };
+    s.gesture = { kind: ["hug", "kiss", "cheer"].includes(t.social) ? "hug" : "talk", until: performance.now() + 1800 };
     target.idle = -4; s.idle = -3;
   }
 
@@ -479,8 +694,12 @@ export function openHouse3d(app, state, hid, onExit) {
   function step(dt) {
     const gmin = dt * GAME_MIN_PER_SEC * speed;
     saved.time += gmin;
-    const hour = Math.floor(saved.time % 1440 / 60);
+    const hour = Math.floor(saved.time % 1440 / 60), day = today();
     for (const s of sims) {
+      tickMoodlets(s.life, gmin);
+      if (s.life.shift) { shiftTick(s, gmin); continue; }
+      if (checkShift(s, day, hour)) continue;
+      if (s.life.wants.length < 3 && Math.random() < gmin / 90) fillWants(s.c, s.life, { hasPartner: !!partnerOf(s.id, ALL_IDS) });
       const t = s.task, doing = t?.phase === "do" ? ACTIONS[t.action] : null;
       for (const [n, inf] of Object.entries(NEEDS)) {
         if (doing?.gain[n] > 0) continue;
@@ -491,19 +710,19 @@ export function openHouse3d(app, state, hid, onExit) {
         s.idle += gmin;
         if (s.idle > 12) {
           s.idle = 0;
-          const others = sims.filter(o => o !== s && o.task?.action !== "sleep");
+          const others = sims.filter(o => o !== s && !o.life.shift && o.task?.action !== "sleep");
           const night = hour >= 22 || hour < 6, fav = favoriteOf(s.c, state.custom[s.id]);
-          if (night && s.needs.energy < 85 && s.visitor) { say(s, "It's late, I'm heading home! 👋"); command(s, { type: "walk", x: DOOR.x, y: DOOR.y + 40, leaving: true }); continue; }
-          const pk = night && s.needs.energy < 85 ? { kind: "action", obj: bedFor(s), action: "sleep" } : chooseAutonomous(s.c, s, others, saved.objects, fav);
-          if (pk?.kind === "action" && pk.obj) command(s, { type: "action", obj: pk.obj, action: pk.action });
-          if (pk?.kind === "social") command(s, { type: "social", target: pk.target.id, social: autoSocial(s, pk.target) });
+          if (night && s.needs.energy < 85 && s.visitor) { say(s, "It's late, I'm heading home! 👋"); command(s, { type: "walk", x: DOOR.x, y: DOOR.y + 40, leaving: true, auto: true }); continue; }
+          const pk = night && s.needs.energy < 85 ? { kind: "action", obj: bedFor(s), action: "sleep" } : wantPick(s, hour, day) || chooseAutonomous(s.c, s, others, saved.objects, fav);
+          if (pk?.kind === "action" && pk.obj) command(s, { type: "action", obj: pk.obj, action: pk.action, auto: true });
+          if (pk?.kind === "social") command(s, { type: "social", target: pk.target.id, social: autoSocial(s, pk.target), auto: true });
         }
         continue;
       }
       if (t.phase === "walk") {
         let tx = t.x, ty = t.y;
         if (t.type === "social") {
-          const o = simById[t.target]; if (!o) { s.task = null; continue; }
+          const o = simById[t.target]; if (!o || o.life.shift) { finish(s); continue; }
           tx = o.x + (s.x < o.x ? -22 : 22); ty = o.y;
           if (!t.path.length && roomAt(s.x, s.y) !== roomAt(o.x, o.y)) t.path = pathTo(s.x, s.y, o.x, o.y);
         }
@@ -514,20 +733,22 @@ export function openHouse3d(app, state, hid, onExit) {
         if (via && d <= stepLen + 0.5) { s.x = tx; s.y = ty; t.path.shift(); continue; }
         if (d <= stepLen + 0.5) {
           s.x = tx; s.y = ty;
-          if (t.type === "walk") { s.task = null; if (t.leaving) sendHome(s.id); }
-          else if (t.type === "social") { finishSocial(s, t); s.task = null; }
+          if (t.type === "walk") { if (t.shift) startShift(s); else if (t.leaving) { s.task = null; sendHome(s.id); } else finish(s); }
+          else if (t.type === "social") { finishSocial(s, t); finish(s); }
           else { t.phase = "do"; s.heading = t.faceAngle; if (t.action === favoriteOf(s.c, state.custom[s.id])) say(s, "❤️ My favorite!"); }
         } else { s.x += dx / d * stepLen; s.y += dy / d * stepLen; }
       } else if (t.phase === "do") {
         const a = ACTIONS[t.action];
         const fav = t.action === favoriteOf(s.c, state.custom[s.id]);
-        for (const [n, g] of Object.entries(a.gain)) s.needs[n] = clamp(s.needs[n] + g * gmin);
+        const skill = skillFor(t.action), boost = 1 + skillLevel(s.life, skill) * 0.05;
+        for (const [n, g] of Object.entries(a.gain)) s.needs[n] = clamp(s.needs[n] + g * gmin * (g > 0 ? boost : 1));
         if (fav) s.needs.fun = clamp(s.needs.fun + 0.5 * gmin);
         if (a.pay) state.funds[s.visitor ? homeOf(s.id).id : hid] += a.pay * gmin / 60;
+        const lv = practice(s.life, skill, gmin, s.em.emotion); if (lv) levelUp(s, skill, lv);
         t.remaining -= gmin;
-        if (t.remaining <= 0 || (a.until && s.needs[a.until] >= 100)) { s.task = null; s.idle = 6; nudgeOff(s); }
+        if (t.remaining <= 0 || (a.until && s.needs[a.until] >= 100)) { completeAction(s, t); s.idle = 6; nudgeOff(s); finish(s); }
       }
-      s.mood = moodOf(s.c, s.needs);
+      updateEmotion(s);
     }
   }
   // step off furniture after using it
@@ -542,10 +763,95 @@ export function openHouse3d(app, state, hid, onExit) {
     beds.sort((a, b) => load(a) - load(b) || (a.type === "bed" ? -1 : 1));
     return beds[0].id;
   }
+  // Free will reads the room: cheer up sad people, flirt with bae, and emotions push certain moves.
   function autoSocial(s, target) {
-    const opts = availableSocials(s.c, target.c, state.rel[`${s.id}|${target.id}`]);
-    if (s.c.traits.includes("sassy") && Math.random() < 0.5) return opts.includes("roast") && Math.random() < 0.5 ? "roast" : "blunt";
-    return opts[Math.floor(Math.random() * opts.length)];
+    const opts = availableSocials(s.c, target.c, state.rel[`${s.id}|${target.id}`], socialCtx(s, target));
+    const has = x => opts.includes(x), em = s.em.emotion;
+    if (has("cheer") && Math.random() < 0.6) return "cheer";
+    if (has("vent") && Math.random() < 0.5) return "vent";
+    if (isCouple(s.id, target.id) && Math.random() < 0.4) { const r = ["flirt", "kiss", "love"].filter(has); if (r.length) return pickR(r); }
+    if (s.c.traits.includes("sassy") && Math.random() < (em === "angry" ? 0.8 : 0.5)) {
+      if (has("roast") && (Math.random() < 0.5 || em === "playful" || em === "angry")) return "roast";
+      if (has("blunt")) return "blunt";
+    }
+    const boosted = opts.filter(o => socialBonus(em, o) > 0);
+    if (boosted.length && Math.random() < 0.5) return pickR(boosted);
+    const plain = opts.filter(o => !SOCIALS[o].couples);
+    return pickR(plain.length ? plain : opts);
+  }
+  // Sometimes they go after one of their wants (or homework) on their own.
+  function wantPick(s, hour, day) {
+    const findObj = a => saved.objects.filter(o => info(o).actions.includes(a));
+    if (goesToSchool(s.c) && !s.life.school?.homework && day % 7 < 5 && hour >= 15 && hour < 21 && Math.random() < 0.35) {
+      const os = findObj("homework"); if (os.length) return { kind: "action", obj: pickR(os).id, action: "homework" };
+    }
+    if (Math.random() < 0.3) {
+      for (const id of s.life.wants) {
+        if (!ACTIONS[id] || !canDo(s.c, id)) continue;
+        const os = findObj(id); if (os.length) return { kind: "action", obj: pickR(os).id, action: id };
+      }
+    }
+    return null;
+  }
+  function updateEmotion(s) {
+    const prev = s.em?.emotion;
+    s.em = emotionOf(s.life, s.needs, s.c);
+    s.mood = EMOTIONS[s.em.emotion].face;
+    if (s.em.emotion !== prev && isGood(s.em.emotion) && s.em.level >= 2) wantsDone(s, checkWants(s.life, "emotion", s.em.emotion));
+  }
+  function completeAction(s, t) {
+    const aft = AFTER[t.action];
+    if (aft && (t.action !== "sleep" || s.needs.energy >= 95)) {
+      let { label, power } = aft;
+      if ((t.action === "cook" || t.action === "grill") && skillLevel(s.life, "cooking") >= 4) { label = "Delicious meal"; power = 2; }
+      addMoodlet(s.life, label, aft.emotion, power, aft.mins);
+    }
+    if (t.action === "homework") { (s.life.school ||= { perf: 55 }).homework = true; say(s, "Homework done! ✏️"); }
+    wantsDone(s, checkWants(s.life, "action", t.action));
+  }
+
+  // ---------- Work and school ----------
+  function checkShift(s, day, hour) {
+    const sh = shiftFor(s.c, s.life); if (!sh) return false;
+    const last = s.life.lastShift ||= {};
+    if (last[hid] === undefined) last[hid] = day;   // never rush out the moment you first open a house
+    if (day % 7 >= 5 || last[hid] >= day || hour < sh.start || hour >= sh.end - 1) return false;
+    last[hid] = day;
+    s.queue = [];
+    say(s, sh.kind === "school" ? "Bye! Off to school 🎒" : "Off to work! 💼");
+    command(s, { type: "walk", x: DOOR.x, y: DOOR.y + 40, shift: true });
+    return true;
+  }
+  function startShift(s) {
+    const sh = shiftFor(s.c, s.life); s.task = null;
+    if (!sh) return;
+    s.life.shift = { kind: sh.kind, left: Math.max(30, sh.end * 60 - saved.time % 1440), back: sh.end };
+    s.queue = [];
+    if (selected === s) { const nx = sims.find(o => !o.life.shift && !o.visitor) || sims.find(o => !o.life.shift); if (nx) selected = nx; }
+    renderPanel();
+  }
+  function shiftTick(s, gmin) {
+    const n = s.needs;
+    n.hunger = clamp(n.hunger - 0.05 * gmin); n.energy = clamp(n.energy - 0.04 * gmin); n.fun = clamp(n.fun - 0.05 * gmin);
+    n.hygiene = clamp(n.hygiene - 0.03 * gmin); n.social = clamp(n.social + 0.03 * gmin);
+    s.life.shift.left -= gmin;
+    if (s.life.shift.left <= 0) backFromShift(s);
+  }
+  function backFromShift(s) {
+    const r = endShift(s.c, s.life, s.em.emotion);
+    delete s.life.shift;
+    s.x = DOOR.x; s.y = DOOR.y + 30; s.queue = [];
+    command(s, { type: "walk", x: DOOR.x + (Math.random() * 60 - 30), y: DOOR.y - 50 });
+    if (!r) return;
+    if (r.kind === "work") {
+      state.funds[homeOf(s.id).id] += r.pay;
+      if (r.promoted) { addMoodlet(s.life, "Got promoted!", "confident", 2, 480); say(s, "I GOT PROMOTED!! 🎉"); toast(`🎉 ${s.c.name} got promoted to ${r.title}!`); }
+      else { addMoodlet(s.life, r.good ? "Good day at work" : "Rough day at work", r.good ? "happy" : "tense", 1, 180); say(s, r.good ? "Work was good today!" : "What a day… 😮‍💨"); toast(`💼 ${s.c.name} is home from work. +${money(r.pay)}`); }
+    } else {
+      addMoodlet(s.life, r.good ? "Good day at school" : "Tough day at school", r.good ? "happy" : "tense", 1, 180);
+      say(s, r.good ? "School was fun!" : "Ugh, school 😩"); toast(`🎒 ${s.c.name} is home from school. Grade: ${r.grade}`);
+    }
+    renderPanel(); persist();
   }
 
   // ---------- Draw ----------
@@ -560,18 +866,24 @@ export function openHouse3d(app, state, hid, onExit) {
     clock.textContent = fmtTime(saved.time);
     // daylight follows the clock
     const hr = (saved.time % 1440) / 60, day = Math.max(0, Math.min(1, Math.sin((hr - 6) / 12 * Math.PI) * 1.6));
-    sun.intensity = 0.25 + day * 1.4; hemi.intensity = 0.45 + day * 0.7;
+    sun.intensity = 0.15 + day * 1.9; hemi.intensity = 0.15 + day * 0.3;
+    renderer.toneMappingExposure = 0.62 + day * 0.2;
+    for (const l of lamps) l.intensity = (1 - day) * 6;
     scene.background.setHSL(0.57, 0.55, 0.18 + day * 0.55);
     twinkle();
 
     const vr = canvas.getBoundingClientRect();
     const shown = [];
     for (const s of sims) {
+      const out = !!s.life.shift;
+      s.model.visible = !out; s.label.style.display = out ? "none" : "";
+      if (out) { s.labelPos = null; continue; }
       const t = s.task;
       let pose = "idle", lift = 0;
       if (t?.phase === "walk") pose = "walk";
       else if (t?.phase === "do") { pose = t.pose; lift = t.lift || 0; }
-      if (s.gesture && now < s.gesture.until && pose === "idle") pose = s.gesture.kind === "hug" ? "use" : "idle";
+      if (s.gesture && now < s.gesture.until && pose === "idle") pose = s.gesture.kind === "hug" ? "use" : "talk";
+      setMood(s.person, s.mood);
       // standing around with nothing to do: after a moment, turn toward the camera so you can see faces
       if (!t && !(s.gesture && now < s.gesture.until)) {
         s.idleReal = (s.idleReal || 0) + 1 / 60;
@@ -584,7 +896,7 @@ export function openHouse3d(app, state, hid, onExit) {
       s.person.rotation.y += d * Math.min(1, 0.25 * speed + 0.15);
       animatePerson(s.person, speed === 0 && pose === "walk" ? "idle" : pose, clockT * Math.max(1, speed) + s.phase);
       s.ring.visible = s === selected;
-      s.ring.material.color.set(MOOD_COLOR[s.mood]);
+      s.ring.material.color.set(EMOTIONS[s.em.emotion].color);
       s.ring.position.y = 0.03 - lift;
       // label above head
       tmp.set(w.x, lift + (pose === "lie" ? 1.2 : 2.15) * s.person.scale.y, w.z).project(camera);
@@ -592,7 +904,7 @@ export function openHouse3d(app, state, hid, onExit) {
       s.label.style.transform = `translate(${sx}px, ${sy}px) translate(-50%, -100%)`;
       s.labelPos = { sx, sy };
       s.label.classList.toggle("sel", s === selected);
-      s.label.style.setProperty("--mood", MOOD_COLOR[s.mood]);
+      s.label.style.setProperty("--mood", EMOTIONS[s.em.emotion].color);
       const b = s.label.querySelector(".bubble");
       const zzz = t?.phase === "do" && (t.action === "sleep" || t.action === "nap") ? "💤" : "";
       const txt = s.bubble && now < s.bubble.until ? s.bubble.text : zzz;
@@ -643,6 +955,7 @@ export function openHouse3d(app, state, hid, onExit) {
   }
 
   // ---------- Panel ----------
+  let tab = "needs";
   function renderPanel() {
     if (mode === "build") {
       panel.innerHTML = `<div class="build-panel"><div class="funds">${money(state.funds[hid])}</div><button class="btn buy">🛒 Buy furniture</button><button class="btn ghost done">Done</button></div>`;
@@ -650,36 +963,112 @@ export function openHouse3d(app, state, hid, onExit) {
       panel.querySelector(".done").onclick = () => setMode("live");
       return;
     }
+    const kid = selected && goesToSchool(selected.c);
     panel.innerHTML = `
-      <div class="who"><div class="pface"></div><div class="pinfo"><b class="pname"></b><small class="pstatus"></small></div><button class="stop btn ghost">Stop</button></div>
-      <div class="needs">${Object.entries(NEEDS).map(([k, n]) => `<div class="need" data-n="${k}"><span>${n.icon} ${n.label}</span><span class="meter"><i></i></span></div>`).join("")}</div>
-      <div class="row"><div class="switch">${sims.map(s => `<button data-id="${s.id}" class="${s === selected ? "on" : ""}${s.visitor ? " vis" : ""}" aria-label="Play as ${s.c.name}">${avatarSvg(state.looks[s.id], { age: s.c.age, years: s.c.years, size: 30 })}</button>`).join("")}</div>
+      <div class="who"><div class="pface"></div><div class="pinfo"><b class="pname"></b><small class="pstatus"></small></div><div class="queue"></div></div>
+      <div class="tabs">${TABS.map(([k, l]) => `<button data-tab="${k}" class="${tab === k ? "on" : ""}">${k === "job" && kid ? "School" : l}</button>`).join("")}</div>
+      <div class="tabbody"></div>
+      <div class="row"><div class="switch">${sims.map(s => `<button data-id="${s.id}" class="${s === selected ? "on" : ""}${s.visitor ? " vis" : ""}${s.life.shift ? " out" : ""}" aria-label="Play as ${s.c.name}">${avatarSvg(state.looks[s.id], { age: s.c.age, years: s.c.years, size: 30 })}${s.life.shift ? `<em>${s.life.shift.kind === "school" ? "🎒" : "💼"}</em>` : ""}</button>`).join("")}</div>
       <div class="tools"><span class="funds">${money(state.funds[hid])}</span><button class="tool invite">👋 Invite</button><button class="tool build">🔨 Build</button></div></div>`;
-    panel.querySelector(".stop").onclick = () => { if (selected) { selected.task = null; selected.idle = -20; } };
-    panel.querySelectorAll(".switch button").forEach(b => b.onclick = () => { selected = simById[b.dataset.id]; renderPanel(); });
+    panel.querySelectorAll(".switch button").forEach(b => b.onclick = () => {
+      const s = simById[b.dataset.id];
+      if (s === selected && !s.life.shift) focusOn(s);   // tap the same face again to find them
+      selected = s; renderPanel();
+    });
+    panel.querySelectorAll(".tabs button").forEach(b => b.onclick = () => { tab = b.dataset.tab; renderPanel(); });
     panel.querySelector(".invite").onclick = inviteMenu;
     panel.querySelector(".build").onclick = () => setMode("build");
+    // buttons inside the tab body and queue are redrawn often, so listen once on the panel
+    panel.onclick = e => {
+      const q = e.target.closest("[data-q]"); if (q && selected) return cancelQueued(selected, +q.dataset.q);
+      const a = e.target.closest("[data-act]"); if (!a || !selected) return;
+      const s = selected, act = a.dataset.act;
+      if (act === "rewards") rewardsMenu(s);
+      else if (act === "findjob") jobMenu(s);
+      else if (act === "dayoff") { (s.life.lastShift ||= {})[hid] = nextShiftDay(s); toast(`${s.c.name} is taking the next ${goesToSchool(s.c) ? "school" : "work"} day off.`); s.life.dayOff = true; updatePanel(); }
+      else if (act === "quit") { delete s.life.job; say(s, "I quit! ✌🏾"); renderPanel(); persist(); }
+      else if (act === "rel") { const o = simById[a.dataset.id]; if (o && o !== s && !o.life.shift) simTapped(o); }
+    };
     if (selected) panel.querySelector(".pface").innerHTML = avatarSvg(state.looks[selected.id], { age: selected.c.age, years: selected.c.years, size: 44 });
     updatePanel();
+  }
+  // the next weekday shift that hasn't happened yet
+  function nextShiftDay(s) {
+    const sh = shiftFor(s.c, s.life), hr = (saved.time % 1440) / 60;
+    let d = today(); if (!sh || hr >= sh.start - 1 || d % 7 >= 5) d++;
+    while (d % 7 >= 5) d++;
+    return d;
+  }
+  const setHTML = (n, html) => { if (n && n.dataset.sig !== html) { n.dataset.sig = html; n.innerHTML = html; } };
+  const left = mins => mins >= 60 ? `${Math.round(mins / 60)}h` : `${Math.max(1, Math.round(mins))}m`;
+  function taskIcon(t) {
+    if (t.type === "walk") return t.shift ? "🚪" : "🚶🏾";
+    if (t.type === "social") return SOCIALS[t.social].couples ? "💕" : "💬";
+    return info(objIndex[t.obj] || { type: "plant" }).icon;
+  }
+  function tabHTML(s) {
+    const L = s.life;
+    if (tab === "needs") return `<div class="needs">${Object.entries(NEEDS).map(([k, n]) => `<div class="need" data-n="${k}"><span>${n.icon} ${n.label}</span><span class="meter"><i></i></span></div>`).join("")}</div>`;
+    if (tab === "mood") {
+      const e = EMOTIONS[s.em.emotion];
+      const list = s.em.list.map(m => `<span class="ml" style="--ec:${EMOTIONS[m.emotion].color}">${EMOTIONS[m.emotion].icon} ${m.label}${m.power > 1 ? ` +${m.power}` : ""}${m.left ? ` <small>${left(m.left)}</small>` : ""}</span>`).join("");
+      return `<div class="emo" style="--ec:${e.color}">${e.icon} <b>${emotionText(s.em)}</b></div><div class="mls">${list || `<span class="ml">Nothing special going on</span>`}</div>`;
+    }
+    if (tab === "wants") {
+      const ws = L.wants.map(wantInfo).filter(Boolean);
+      return `<div class="wants">${ws.map(w => `<div class="want">${w.icon}<span>${w.text}</span></div>`).join("") || `<div class="want">✨<span>Thinking…</span></div>`}</div>
+        <div class="pts"><span>✨ ${L.points} points</span><button class="tool" data-act="rewards">🎁 Rewards</button></div>`;
+    }
+    if (tab === "skills") {
+      const ks = Object.entries(SKILLS).filter(([k]) => !(goesToSchool(s.c) && k === "cooking"));
+      return `<div class="skills">${ks.map(([k, sk]) => { const v = L.skills[k] || { lvl: 0, xp: 0 };
+        return `<div class="skill"><span>${sk.icon} ${sk.label}</span><b>${v.lvl}</b><span class="meter"><i style="width:${v.lvl >= 10 ? 100 : v.xp / xpNeeded(v.lvl) * 100}%;background:#3d7bf2"></i></span></div>`; }).join("")}</div>`;
+    }
+    if (tab === "job") {
+      const sh = shiftFor(s.c, L);
+      const off = L.lastShift?.[hid] >= nextShiftDay(s) && L.dayOff;
+      const skip = sh ? `<button class="tool" data-act="dayoff" ${off ? "disabled" : ""}>${off ? "Day off set ✓" : "Take a day off"}</button>` : "";
+      if (goesToSchool(s.c)) {
+        const sc = L.school || { perf: 55 };
+        return `<div class="job"><div><b>🎒 School</b> · weekdays ${fmtHour(sh.start)}–${fmtHour(sh.end)}</div>
+          <div class="relbar"><span>Grade: <b>${gradeOf(sc.perf)}</b></span><span class="meter"><i style="width:${sc.perf}%;background:#a66cff"></i></span></div>
+          <div class="jrow"><span>${sc.homework ? "Homework done ✓" : "📝 Homework not done yet (computer or table)"}</span>${skip}</div></div>`;
+      }
+      if (!L.job) return `<div class="job"><div>No job yet. Get one to earn money and promotions.</div><div class="jrow"><span></span><button class="tool" data-act="findjob">💼 Find a job</button></div></div>`;
+      const k = CAREERS[L.job.track];
+      return `<div class="job"><div><b>${k.icon} ${k.levels[L.job.level]}</b> · ${k.label}, level ${L.job.level + 1}/5</div>
+        <div><small>Weekdays ${fmtHour(k.start)}–${fmtHour(k.end)} · $${PAY[L.job.level]}/hr · helps: ${SKILLS[k.skill].label}, good moods</small></div>
+        <div class="relbar"><span>Performance</span><span class="meter"><i style="width:${L.job.perf}%;background:#2ecc71"></i></span></div>
+        <div class="jrow">${skip}<button class="tool" data-act="quit">Quit</button></div></div>`;
+    }
+    // people
+    const rows = CHARACTERS.filter(c => c.id !== s.id).map(c => ({ c, v: state.rel[`${s.id}|${c.id}`] ?? 0 })).sort((a, b) => b.v - a.v);
+    return `<div class="rels">${rows.map(({ c, v }) => `<button class="rel" data-act="rel" data-id="${c.id}"><span>${c.name}${isCouple(s.id, c.id) ? " 💕" : ""}</span><small>${relLabel(s.id, c.id)} · ${friendLabel(v)}</small><span class="meter"><i style="width:${v}%;background:#2ecc71"></i></span></button>`).join("")}</div>`;
   }
   function updatePanel() {
     const f = panel.querySelector(".funds"); if (f) f.textContent = money(state.funds[hid]);
     if (mode === "build") return;
     const s = selected;
-    if (!s) { panel.querySelector(".pname").textContent = "Nobody's home"; panel.querySelector(".pstatus").textContent = "Tap Invite to call someone over."; panel.querySelector(".stop").style.visibility = "hidden"; return; }
+    if (!s) { panel.querySelector(".pname").textContent = "Nobody's home"; panel.querySelector(".pstatus").textContent = "Tap Invite to call someone over."; return; }
     panel.querySelector(".pname").textContent = s.c.name + (s.visitor ? " (visiting)" : "");
-    const t = s.task;
-    const status = !t ? "Free time" : t.type === "walk" ? "Walking" : t.type === "social"
-      ? `Going to ${SOCIALS[t.social].label.toLowerCase()} with ${simById[t.target]?.c.name || "someone"}`
+    const t = s.task, e = EMOTIONS[s.em.emotion];
+    const status = s.life.shift ? `${s.life.shift.kind === "school" ? "At school" : "At work"} · back around ${fmtHour(s.life.shift.back)}`
+      : !t ? "Free time" : t.type === "walk" ? (t.shift ? "Heading out" : "Walking") : t.type === "social"
+      ? `Going to ${SOCIALS[t.social].label.replace(/^[^A-Za-z]+/, "").toLowerCase()} with ${simById[t.target]?.c.name || "someone"}`
       : t.phase === "walk" ? `Heading to the ${info(objIndex[t.obj] || { type: "plant" }).label.toLowerCase()}` : ACTIONS[t.action].verb;
-    panel.querySelector(".pstatus").textContent = `${MOOD_TEXT[s.mood]} · ${status}`;
-    panel.querySelector(".stop").style.visibility = t ? "visible" : "hidden";
-    for (const [n, v] of Object.entries(s.needs)) {
-      const i = panel.querySelector(`.need[data-n="${n}"] i`);
+    panel.querySelector(".pstatus").innerHTML = `<span class="epill" style="--ec:${e.color}">${e.icon} ${emotionText(s.em)}</span> ${status}`;
+    // action queue: what they're doing now, then what's lined up. Tap one to cancel it.
+    const q = s.life.shift ? [] : [t, ...s.queue].filter(Boolean);
+    setHTML(panel.querySelector(".queue"), q.map((x, i) => `<button class="qchip${i === 0 ? " now" : ""}${x.auto ? " auto" : ""}" data-q="${i}" aria-label="Cancel">${taskIcon(x)}<i>✕</i></button>`).join(""));
+    const body = panel.querySelector(".tabbody");
+    setHTML(body, tabHTML(s));
+    if (tab === "needs") for (const [n, v] of Object.entries(s.needs)) {
+      const i = body.querySelector(`.need[data-n="${n}"] i`); if (!i) continue;
       i.style.width = `${v}%`; i.style.background = v >= 60 ? "#2ecc71" : v >= 30 ? "#f1c40f" : "#e74c3c";
     }
   }
 
+  function focusOn(s) { const w = toW(s.x, s.y); cam.target.set(w.x, 0, w.z); cam.zoom = Math.max(cam.zoom, 2.2); placeCamera(); }
   function persist() { for (const s of sims) saved.pos[s.id] = { x: s.x, y: s.y }; save(state); }
   function leave() { persist(); running = false; ro.disconnect(); renderer.setAnimationLoop(null); renderer.dispose(); onExit(); }
   document.addEventListener("visibilitychange", () => { if (document.hidden && running) persist(); });
@@ -688,7 +1077,7 @@ export function openHouse3d(app, state, hid, onExit) {
   syncSims();
   setSpeed(1);
   resize();
-  if (location.hash === "#debug") window.__house = { get sims() { return sims; }, roomAt, doors };
+  if (location.hash === "#debug") window.__house = { get sims() { return sims; }, get simById() { return simById; }, get selected() { return selected; }, roomAt, doors, cam, placeCamera, toW, saved, state, order, command, setSpeed, step, renderPanel, setTab: t => { tab = t; renderPanel(); } };
   renderer.setAnimationLoop(() => {
     if (!running) return;
     const now = performance.now(), dt = Math.min(0.1, (now - lastFrame) / 1000);

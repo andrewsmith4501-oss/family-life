@@ -1,5 +1,6 @@
 // Simulation rules: needs, objects, actions, social interactions and free will.
 import { byId, relType, TRAITS } from "./characters.js";
+import { isCouple } from "./life.js";
 
 export const NEEDS = {
   hunger:  { label: "Hunger",  icon: "🍔", decay: 0.12 },
@@ -24,7 +25,7 @@ export const ROOMS = [
 export const CATALOG = {
   fridge:   { icon: "🧊", label: "Fridge",        price: 600, cat: "Kitchen",  actions: ["snack", "cook"] },
   stove:    { icon: "🍳", label: "Stove",         price: 450, cat: "Kitchen",  actions: ["cook"] },
-  table:    { icon: "🍽️", label: "Dining table",  price: 250, cat: "Kitchen",  actions: ["snack"] },
+  table:    { icon: "🍽️", label: "Dining table",  price: 250, cat: "Kitchen",  actions: ["snack", "homework"] },
   grill:    { icon: "🍖", label: "Grill",         price: 350, cat: "Kitchen",  actions: ["grill"] },
   tv:       { icon: "📺", label: "TV",            price: 500, cat: "Fun",      actions: ["tv"] },
   console:  { icon: "🎮", label: "Game console",  price: 400, cat: "Fun",      actions: ["games"] },
@@ -33,7 +34,7 @@ export const CATALOG = {
   aquarium: { icon: "🐠", label: "Fish tank",     price: 300, cat: "Fun",      actions: ["fish"] },
   toys:     { icon: "🧸", label: "Toy box",       price: 120, cat: "Fun",      actions: ["play"] },
   books:    { icon: "📚", label: "Bookshelf",     price: 180, cat: "Fun",      actions: ["read"] },
-  computer: { icon: "💻", label: "Computer",      price: 800, cat: "Fun",      actions: ["browse", "games", "work"] },
+  computer: { icon: "💻", label: "Computer",      price: 800, cat: "Fun",      actions: ["browse", "games", "work", "homework"] },
   treadmill:{ icon: "🏃", label: "Treadmill",     price: 550, cat: "Fun",      actions: ["workout"] },
   couch:    { icon: "🛋️", label: "Couch",         price: 400, cat: "Comfort",  actions: ["relax", "nap"] },
   bed:      { icon: "🛏️", label: "Bed",           price: 450, cat: "Comfort",  actions: ["sleep", "nap"] },
@@ -87,6 +88,7 @@ export const ACTIONS = {
   browse: { label: "Scroll the internet", verb: "Online",  mins: 40,  gain: { fun: 1.0, social: 0.4 } },
   read:   { label: "Read a book",    verb: "Reading",      mins: 45,  gain: { fun: 0.9 } },
   work:   { label: "Work from home ($)", verb: "Working",  mins: 240, gain: { fun: -0.15, energy: -0.08 }, pay: 60, adultsOnly: true },
+  homework:{ label: "Do homework",  verb: "Doing homework", mins: 45, gain: { fun: -0.1 }, kidsOnly: true },
   workout:{ label: "Work out",       verb: "Working out",  mins: 40,  gain: { fun: 0.8, energy: -0.3, hygiene: -0.4 }, adultsOnly: true },
 };
 
@@ -124,11 +126,21 @@ export const SOCIALS = {
   blunt:      { label: "Keep it real",  base: 0.55, delta: 7,  social: 20, needsTrait: "direct" },
   roast:      { label: "Roast them",    base: 0.5,  delta: 9,  social: 22, fun: 10, needsTrait: "sassy" },
   sideeye:    { label: "Give side-eye", base: 0.45, delta: 5,  social: 10, fun: 6,  needsTrait: "sassy" },
+  cheer:      { label: "Cheer them up", base: 0.8,  delta: 6,  social: 20, targetSad: true },
+  vent:       { label: "Vent about your day", base: 0.75, delta: 4, social: 22, actorUpset: true },
+  flirt:      { label: "💕 Flirt",       base: 0.75, delta: 3,  social: 18, couples: true, romance: 6 },
+  kiss:       { label: "💋 Kiss",        base: 0.7,  delta: 4,  social: 20, couples: true, romance: 9, minRom: 45 },
+  love:       { label: "❤️ Say \"I love you\"", base: 0.85, delta: 6, social: 25, couples: true, romance: 10, minRom: 60 },
 };
 
-export function availableSocials(actor, target, rel) {
+// ctx (optional): { romance, actorEmotion, targetEmotion } from life.js
+export function availableSocials(actor, target, rel, ctx = {}) {
   return Object.entries(SOCIALS).filter(([, s]) => {
     if (s.needsTrait && !actor.traits.includes(s.needsTrait)) return false;
+    if (s.couples && !isCouple(actor.id, target.id)) return false;
+    if (s.minRom && (ctx.romance ?? 70) < s.minRom) return false;
+    if (s.targetSad && !["sad", "angry", "tense", "embarrassed"].includes(ctx.targetEmotion)) return false;
+    if (s.actorUpset && !["sad", "angry", "tense"].includes(ctx.actorEmotion)) return false;
     if (s.minRel && rel < s.minRel) return false;
     if (s.kidTarget && !isKid(target)) return false;
     return true;
@@ -149,12 +161,17 @@ const LINES = {
   roast:      { ok: ["Who dressed you today? 💀", "That haircut was a choice.", "You cook like you're mad at the food.", "Not you trying 😭"],
                 bad: ["That was low.", "I'm telling Mom.", "Okay, that one hurt."] },
   sideeye:    { ok: ["👀", "…Really?", "Mm. 🙄"], bad: ["Why you looking at me like that?", "What did I do??"] },
+  cheer:      { ok: ["Hey, it's gonna be okay.", "Come here, you got this.", "Want some ice cream?"], bad: ["Leave me alone for a sec.", "Not right now."] },
+  vent:       { ok: ["You would NOT believe my day.", "I just need to get this off my chest…", "Okay so listen…"], bad: ["…Never mind.", "You're not even listening."] },
+  flirt:      { ok: ["Hey, good lookin' 😏", "You still got it 😘", "Is it hot in here or is it you?"], bad: ["Not in front of the kids!", "Babe, I'm busy 😅"] },
+  kiss:       { ok: ["😘", "Mwah!", "💋"], bad: ["Later, babe.", "My breath is not ready 😂"] },
+  love:       { ok: ["I love you.", "You're my everything ❤️", "Love you more."], bad: ["…Love you too?", "What did you do? 😂"] },
 };
 
 // Resolve an interaction. Returns { ok, delta, line, reply }.
-export function resolveSocial(type, actor, target, rel, phrases = []) {
+export function resolveSocial(type, actor, target, rel, phrases = [], bonus = 0) {
   const s = SOCIALS[type];
-  let chance = s.base + (rel - 50) / 200;
+  let chance = s.base + (rel - 50) / 200 + bonus;
   if (target.traits.includes("funny") && (type === "joke" || type === "roast")) chance += 0.15;
   if (target.traits.includes("chill")) chance += 0.08;
   if (target.traits.includes("loving") && (type === "hug" || type === "deep")) chance += 0.1;
@@ -170,7 +187,7 @@ export function resolveSocial(type, actor, target, rel, phrases = []) {
     ok,
     delta: ok ? s.delta : -Math.round(s.delta * 0.8),
     line: ok && phrases.length && ["chat", "joke", "blunt", "roast", "deep"].includes(type) && Math.random() < 0.45 ? pick(phrases) : pick(ok ? lines.ok : lines.bad),
-    reply: ok ? pick(["😄", "😂", "❤️", "Facts!", "Haha!", "For real!"]) : pick(["😒", "🙄", "Ugh.", "😤"]),
+    reply: ok ? pick(s.couples ? ["😍", "❤️", "Aww 🥰", "Love you too!"] : type === "cheer" ? ["Thanks… I needed that.", "🥹", "You're the best."] : ["😄", "😂", "❤️", "Facts!", "Haha!", "For real!"]) : pick(["😒", "🙄", "Ugh.", "😤"]),
   };
 }
 
