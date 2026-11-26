@@ -150,3 +150,30 @@ button, .stage, .sim, .obj { touch-action: manipulation; -webkit-user-select: no
 .stage-wrap { -webkit-user-select: none; user-select: none; }
 .install-tip { background: #fff4c2; border-radius: 14px; padding: 10px 14px; margin-bottom: 12px; font-size: 14px; display: flex; gap: 10px; align-items: flex-start; }
 .install-tip button { margin-left: auto; color: var(--muted); font-size: 18px; line-height: 1; }
+
+/* ---------- 3D view ---------- */
+.view3d { flex: 1; position: relative; overflow: hidden; min-height: 0; background: #a7d3ee; }
+.view3d canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+.view3d .labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.tag3d { position: absolute; left: 0; top: 0; display: flex; flex-direction: column; align-items: center; gap: 3px; will-change: transform; }
+.tag3d .nm { font-size: 10px; font-weight: 700; background: rgba(255,255,255,.85); border-radius: 6px; padding: 0 5px; white-space: nowrap; }
+.tag3d.sel .nm { background: var(--mood, var(--accent)); color: #fff; }
+.tag3d .bubble { position: static; transform: scale(.6); }
+.tag3d .bubble.show { transform: scale(1); }
+.cam { position: absolute; right: 8px; bottom: 8px; display: flex; gap: 6px; z-index: 4; }
+.cam button { width: 38px; height: 38px; border-radius: 12px; background: rgba(255,255,255,.88); font-size: 18px; box-shadow: 0 2px 6px rgba(0,0,0,.15); }
+.gfx { color: var(--muted); font-size: 14px; }
+.gfx .pill { padding: 5px 12px; }
+
+/* Speech bubbles in 3D: wrap long lines, stack instead of overlapping, name the speaker when lifted. */
+.tag3d .bubble { white-space: normal; max-width: 170px; text-align: center; line-height: 1.25; font-size: 12px;
+  transform: translateY(calc(-1 * var(--lift, 0px))) scale(.6); }
+.tag3d .bubble.show { transform: translateY(calc(-1 * var(--lift, 0px))) scale(1); }
+.tag3d .bubble.lifted::before { content: attr(data-who) ": "; font-weight: 800; color: var(--accent); }
+.tag3d .bubble { transition: opacity .15s; }
+.tag3d .bubble, .tag3d .bubble.show { transform: translate(var(--dx, 0px), calc(-1 * var(--lift, 0px))); }
+.tag3d .bubble { position: relative; z-index: 2; }
+.tag3d:has(.bubble.show) { z-index: 3; }
+/* Bubbles sit above the name, centered on the person, with exact offsets from the layout code. */
+.tag3d .bubble, .tag3d .bubble.show { position: absolute; left: 50%; bottom: calc(100% + 4px); width: max-content; max-width: 170px;
+  transform: translate(calc(-50% + var(--dx, 0px)), calc(-1 * var(--lift, 0px))); }

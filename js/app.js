@@ -2,6 +2,7 @@ import { CHARACTERS, HOUSEHOLDS, TRAITS, byId, relLabel } from "./characters.js"
 import { avatarSvg, OPTIONS, LABELS } from "./avatar.js";
 import { load, save, reset } from "./state.js";
 import { openHouse } from "./house.js";
+import { openHouse3d } from "./house3d.js";
 import { ACTIONS, canDo, favoriteOf } from "./sim.js";
 
 let state = load();
@@ -9,6 +10,7 @@ const app = document.getElementById("app");
 const AGE = { child: "Kid", teen: "Preteen", adult: "Adult", elder: "Elder" };
 const ageText = c => c.years ? `${AGE[c.age]}, ${c.years}` : AGE[c.age];
 
+function hasWebGL() { try { return !!document.createElement("canvas").getContext("webgl2") || !!document.createElement("canvas").getContext("webgl"); } catch (e) { return false; } }
 function householdOf(id) { return HOUSEHOLDS.find(h => h.members.includes(id)); }
 function el(html) { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstElementChild; }
 function face(id, size = 72, mood = "happy") { return avatarSvg(state.looks[id], { age: byId[id].age, years: byId[id].years, size, mood }); }
@@ -40,6 +42,10 @@ function showHouseholds() {
     card.onclick = () => showHousehold(h.id);
     wrap.append(card);
   }
+  let g3 = true; try { g3 = localStorage.getItem("kfam-graphics") !== "2d"; } catch (e) {}
+  const gfx = el(`<div class="foot gfx">Graphics: <button class="pill ${g3 ? "on" : ""}" data-g="3d">3D</button> <button class="pill ${g3 ? "" : "on"}" data-g="2d">Classic</button></div>`);
+  gfx.querySelectorAll("button").forEach(b => b.onclick = () => { try { localStorage.setItem("kfam-graphics", b.dataset.g); } catch (e) {} showHouseholds(); });
+  list.append(gfx);
   const foot = el(`<div class="foot"><button class="link danger">Reset all changes</button></div>`);
   foot.querySelector("button").onclick = () => confirmInline(foot, "Reset everyone's looks and friendships?");
   list.append(foot);
@@ -61,7 +67,11 @@ function showHousehold(hid) {
   bar.querySelector(".back").onclick = showHouseholds;
   app.append(bar);
   const main = el(`<main class="scroll"><button class="btn play">▶ Play this household</button><div class="people"></div></main>`);
-  main.querySelector(".play").onclick = () => openHouse(app, state, hid, () => showHousehold(hid));
+  main.querySelector(".play").onclick = () => {
+    let use3d = true; try { use3d = localStorage.getItem("kfam-graphics") !== "2d"; } catch (e) {}
+    if (use3d && !hasWebGL()) use3d = false;
+    (use3d ? openHouse3d : openHouse)(app, state, hid, () => showHousehold(hid));
+  };
   for (const id of h.members) {
     const c = byId[id];
     const card = el(`<button class="person">

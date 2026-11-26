@@ -274,7 +274,7 @@ export function openHouse(app, state, hid, onExit) {
     s.task = task;
   }
 
-  function say(s, text, secs = 2.5) { s.bubble = { text, until: performance.now() + secs * 1000 }; }
+  function say(s, text, secs = 3.8) { s.bubble = { text, until: performance.now() + secs * 1000 }; }
 
   function finishSocial(s, t) {
     const target = simById[t.target];
@@ -288,7 +288,7 @@ export function openHouse(app, state, hid, onExit) {
     target.needs.social = clamp(target.needs.social + (res.ok ? soc.social : soc.social / 3));
     if (soc.fun && res.ok) { s.needs.fun = clamp(s.needs.fun + soc.fun); target.needs.fun = clamp(target.needs.fun + soc.fun); }
     say(s, res.line);
-    setTimeout(() => say(target, res.reply), 900);
+    setTimeout(() => say(target, res.reply, 3), 1200);
     target.idle = -4;
     s.idle = -3;
   }
