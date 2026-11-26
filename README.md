@@ -1,4 +1,4 @@
-# Family Life
+# K Manner
 
 A small life-sim game made as a Christmas gift. Open it in a phone browser and use "Add to Home Screen" to install it like an app.
 

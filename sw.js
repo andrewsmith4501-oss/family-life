@@ -1,6 +1,6 @@
 // Lets the game open without internet after the first visit.
 // Bump VERSION whenever files change so phones pick up the update.
-const VERSION = "v10";
+const VERSION = "v11";
 const FILES = ["./", "index.html", "style.css", "manifest.webmanifest", "js/app.js", "js/characters.js", "js/avatar.js", "js/state.js", "js/sim.js", "js/house.js", "js/house3d.js", "js/models.js", "vendor/three.module.min.js",
   "icons/icon.svg", "icons/icon-180.png", "icons/icon-192.png", "icons/icon-512.png"];
 
